@@ -1,0 +1,17 @@
+#name version url sha256 (sha256 pinned on first download, verified afterwards)
+wpewebkit 2.54.2 https://wpewebkit.org/releases/wpewebkit-2.54.2.tar.xz f3284e19e47fcb5ac8c63c2e1c113dbd65b2423eb8a545f5b345707829004f56
+brotli 1.1.0 https://github.com/google/brotli/archive/refs/tags/v1.1.0.tar.gz e720a6ca29428b803f4ad165371771f5398faba397edf6778837a18599ea13ff
+nghttp2 1.64.0 https://github.com/nghttp2/nghttp2/releases/download/v1.64.0/nghttp2-1.64.0.tar.xz 88bb94c9e4fd1c499967f83dece36a78122af7d5fb40da2019c56b9ccc6eb9dd
+libpsl 0.21.5 https://github.com/rockdaboot/libpsl/releases/download/0.21.5/libpsl-0.21.5.tar.gz 1dcc9ceae8b128f3c0b3f654decd0e1e891afc6ff81098f227ef260449dae208
+libsoup 3.6.5 https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz 6891765aac3e949017945c3eaebd8cc8216df772456dc9f460976fbdb7ada234
+glib-networking 2.80.1 https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.tar.xz b80e2874157cd55071f1b6710fa0b911d5ac5de106a9ee2a4c9c7bee61782f8e
+harfbuzz 10.4.0 https://github.com/harfbuzz/harfbuzz/releases/download/10.4.0/harfbuzz-10.4.0.tar.xz 480b6d25014169300669aa1fc39fb356c142d5028324ea52b3a27648b9beaad8
+libwebp 1.5.0 https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.5.0.tar.gz 7d6fab70cf844bf6769077bd5d7a74893f8ffd4dfb42861745750c63c2a5c92c
+woff2 1.0.2 https://github.com/google/woff2/archive/refs/tags/v1.0.2.tar.gz add272bb09e6384a4833ffca4896350fdb16e0ca22df68c0384773c67a175594
+libepoxy 1.5.10 https://download.gnome.org/sources/libepoxy/1.5/libepoxy-1.5.10.tar.xz 072cda4b59dd098bba8c2363a6247299db1fa89411dc221c8b81b8ee8192e623
+libgpg-error 1.51 https://gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.51.tar.bz2 be0f1b2db6b93eed55369cdf79f19f72750c8c7c39fc20b577e724545427e6b2
+libgcrypt 1.11.0 https://gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.0.tar.bz2 09120c9867ce7f2081d6aaa1775386b98c2f2f246135761aae47d81f58685b9c
+libtasn1 4.20.0 https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.20.0.tar.gz 92e0e3bd4c02d4aeee76036b2ddd83f0c732ba4cda5cb71d583272b23587a76c
+gst-plugins-base 1.24.11 https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.24.11.tar.xz 98572c1f8b710e52673e250cd96e4f2660d79bd66aa172c5dde5f690c1231e1d
+gst-plugins-good 1.24.11 https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.24.11.tar.xz 94bf3b5118dd4213af66048faac830569cc9a94a8c8e59e8a6d33b315f518462
+gst-plugins-bad 1.24.11 https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.24.11.tar.xz 9126c2b7053a5f059db958f43c6a5230d2e843ff9adff8c8c2477ea2457e3315

@@ -1,0 +1,17 @@
+--- a/Source/WebCore/loader/MixedContentChecker.cpp
++++ b/Source/WebCore/loader/MixedContentChecker.cpp
+@@ -76,6 +76,14 @@
+ 
+ static bool isMixedContent(const Frame& frame, const URL& url)
+ {
++    // TVF: loopback (127.0.0.0/8, ::1, localhost) is potentially trustworthy
++    // (Secure Contexts) and not mixed content (Mixed Content Level 2; Chromium
++    // does not block it either) - for every destination, scripts too, not only
++    // the upgradable media. The app's own services on the TV are there, e.g.
++    // dash.js for the OIPF replacement from TVF's relay on https pages.
++    if (SecurityOrigin::isLocalHostOrLoopbackIPAddress(url.host()))
++        return false;
++
+     if (isDocumentSecure(frame) || (frame.frameURLProtocol() == "data"_s && isDataContextSecure(frame)))
+         return !SecurityOrigin::isSecure(url);
+ 

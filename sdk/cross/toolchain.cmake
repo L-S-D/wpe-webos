@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# CMake toolchain: webOS SDK (GCC 14.2, armv7-a, softfp, glibc 2.12) with the
+# writable sysroot copy /work/sysroot (SDK sysroot + our dependencies).
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR armv7l)
+set(SDK /opt/webos-sdk/arm-webos-linux-gnueabi_sdk-buildroot)
+set(CMAKE_SYSROOT /work/sysroot)
+set(CMAKE_C_COMPILER ${SDK}/bin/arm-webos-linux-gnueabi-gcc)
+set(CMAKE_CXX_COMPILER ${SDK}/bin/arm-webos-linux-gnueabi-g++)
+set(CMAKE_AR ${SDK}/bin/arm-webos-linux-gnueabi-ar CACHE FILEPATH "")
+set(CMAKE_RANLIB ${SDK}/bin/arm-webos-linux-gnueabi-ranlib CACHE FILEPATH "")
+set(CMAKE_STRIP ${SDK}/bin/arm-webos-linux-gnueabi-strip CACHE FILEPATH "")
+set(CMAKE_C_FLAGS_INIT "-pipe -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64")
+set(CMAKE_CXX_FLAGS_INIT "-pipe -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64")
+set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING "")
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING "")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+set(ENV{PKG_CONFIG_SYSROOT_DIR} /work/sysroot)
+set(ENV{PKG_CONFIG_LIBDIR} /work/sysroot/usr/lib/pkgconfig:/work/sysroot/usr/share/pkgconfig)

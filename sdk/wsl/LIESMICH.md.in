@@ -1,0 +1,49 @@
+# TVF: WebKit-Bau mit Medien auf diesem Rechner (WSL2)
+
+Gebaut wird WPE WebKit 2.54.2 für TVF (webOS-TV-App `com.lsd.tvf`, Repo
+`L-S-D/wpe-webos`), und zwar mit Medien: Video, MSE, EME und GStreamer. Die
+Videodaten landen in den TVF-Sinks (`helper/gsttvf.c`) und gehen von dort zum
+Hardware-Decoder des Fernsehers. Gebaut wird mit dem webOS-SDK im
+Docker-Container `tvf-web-sdkbuild`. Dieser Rechner baut nur, weil er schneller
+ist. Die Pakete erzeugt auf dem Host, der den Bau anstößt, `sdk/wsl/pack.sh`.
+
+## Ablauf
+
+In WSL (unter Windows z. B. `wsl -e sh -c "..."`):
+
+- Erstes Mal (holt Arbeitsbaum, SDK und Bau-Image nach `~/tvf-build`):
+  `curl -fsSO @SRC@/setup-wsl.sh && sh setup-wsl.sh`
+- Später, neuer Stand:
+  `curl -fsSO @SRC@/update-wsl.sh && sh update-wsl.sh`
+
+Beide starten danach `~/tvf-build/wsl-build.sh`:
+
+1. Der Bau startet mit `ninja -k 0`, also bis zum Ende, auch wenn einzelne Dateien
+   fehlschlagen. Das Log liegt in `~/tvf-build/wpe-webos/sdk/logs/webkit-media-build.log`.
+2. Das Ergebnis wird nach `stage-media/` installiert.
+3. TVF-Sinks und `tvf-web` werden aus dem aktuellen Quelltext gebaut.
+4. Das Bundle wird erzeugt: `out/tvf-web-sdk-media-armhf.tgz`.
+5. Bundle und Logs gehen per HTTP-PUT an den TVF-Host. Das klappt nur, solange
+   dort `pack.sh` läuft.
+
+Der Bau ist fortsetzbar: einfach `sh ~/tvf-build/wsl-build.sh` noch einmal
+starten. Mit `JOBS=n` lässt sich die Zahl der Jobs vorgeben. Standard ist die
+Zahl der Threads, höchstens ein Job pro 2 GB freiem RAM.
+
+## Wenn eine Datei nicht übersetzt
+
+- Im Log nach `FAILED:` und `error:` suchen.
+- Gebaut wird aus dem gepatchten Baum `wpe-webos/sdk/build/src/wpewebkit-2.54.2`.
+  Er entsteht beim ersten Bau aus `src/wpewebkit-2.54.2.tar.xz` und
+  `patches/webkit/*.patch`. Ein neuer oder geänderter Patch wird erst wirksam,
+  wenn dieser Baum gelöscht und neu entpackt wird. Danach baut ninja nur, was
+  sich geändert hat.
+- Korrekturen gehören in `sdk/patchwork/<Pfad>`. Den Patch danach mit
+  `sh scripts/mkpatch.sh <NAME> <Dateien...>` neu erzeugen, siehe `sdk/README.md`.
+  Dafür braucht es den unveränderten Baum, den gibt es so:
+  `tar -xf src/wpewebkit-2.54.2.tar.xz -C src`.
+
+## Hinweis
+
+Das webOS-SDK, `sdk/sysroot` und `sdk/fromtv` (Bibliotheken vom Fernseher)
+gehören nicht ins Repo und dürfen nicht weitergegeben werden.

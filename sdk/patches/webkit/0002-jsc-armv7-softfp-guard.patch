@@ -1,0 +1,32 @@
+--- a/Source/JavaScriptCore/jit/CCallHelpers.h
++++ b/Source/JavaScriptCore/jit/CCallHelpers.h
+@@ -428,6 +428,14 @@
+     {
+         static_assert(std::is_same_v<CURRENT_ARGUMENT_TYPE, double>, "We should only be passing FPRRegs to a double. We use moveDouble / loadDouble / storeDouble exclusively");
+ 
++#if !CPU(ARM_HARDFP)
++        // softfp (webOS SDK): C functions expect doubles in core registers.
++        // The JIT here passes them in VFP registers, which is only right for
++        // hardfp. This build has no DFG/FTL/WebAssembly, the tiers that call
++        // C with double arguments; stop loudly if such a call is ever made.
++        RELEASE_ASSERT_NOT_REACHED_WITH_MESSAGE("double argument to a C call on softfp ARM");
++#endif
++
+         // ARM (hardfp, which we require) passes FP arguments in FP registers.
+         unsigned numberOfFPArgumentRegisters = FPRInfo::numberOfArgumentRegisters;
+         unsigned currentFPArgCount = argSourceRegs.argCount(arg);
+@@ -742,8 +750,14 @@
+     
+     void setupResults(FPRReg destA)
+     {
++#if CPU(ARM_THUMB2) && !CPU(ARM_HARDFP)
++        // softfp: a double result comes back in r0:r1
++        if (destA != InvalidFPRReg)
++            moveIntsToDouble(GPRInfo::returnValueGPR, GPRInfo::returnValueGPR2, destA);
++#else
+         if (destA != InvalidFPRReg)
+             moveDouble(FPRInfo::returnValueFPR, destA);
++#endif
+     }
+ 
+     void jumpToExceptionHandler(VM& vm)

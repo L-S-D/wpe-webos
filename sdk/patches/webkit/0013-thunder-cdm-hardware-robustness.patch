@@ -1,0 +1,15 @@
+--- a/Source/WebCore/platform/graphics/gstreamer/eme/CDMThunder.cpp
++++ b/Source/WebCore/platform/graphics/gstreamer/eme/CDMThunder.cpp
+@@ -177,7 +177,11 @@
+ 
+ Vector<String> CDMPrivateThunder::supportedRobustnesses() const
+ {
+-    return { emptyString(), "SW_SECURE_DECODE"_s, "SW_SECURE_CRYPTO"_s };
++    // TVF: the TV's CDMs decrypt and decode in hardware (Widevine L1,
++    // PlayReady SL3000), so pages asking for that get it; PlayReady's levels
++    // are what dash.js and others put for com.microsoft.playready.recommendation.
++    return { emptyString(), "SW_SECURE_DECODE"_s, "SW_SECURE_CRYPTO"_s, "HW_SECURE_CRYPTO"_s, "HW_SECURE_DECODE"_s,
++        "HW_SECURE_ALL"_s, "150"_s, "2000"_s, "3000"_s };
+ }
+ 
+ CDMRequirement CDMPrivateThunder::distinctiveIdentifiersRequirement(const CDMKeySystemConfiguration&, const CDMRestrictions&) const

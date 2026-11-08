@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>pointer</title>
+<style>
+  body { margin: 0; width: 1280px; height: 720px; background: #203040; font: 24px sans-serif; color: #fff; }
+  #btn { position: absolute; left: 100px; top: 100px; width: 200px; height: 100px; background: #c33; }
+  #btn:hover { background: #3c3; }
+  #list { position: absolute; left: 600px; top: 100px; width: 300px; height: 300px; overflow: auto; background: #335; }
+  #list div { height: 60px; border-bottom: 1px solid #889; }
+</style></head>
+<body>
+<div id="btn">Knopf</div>
+<div id="list"></div>
+<script>
+  // Zeigertest fuer tvf-web (tests/pointer/run-qemu.sh): Knopf bei 100..300/100..200,
+  // Liste (scrollbar) bei 600..900/100..400
+  var L = document.getElementById('list');
+  for (var i = 0; i < 30; i++) { var d = document.createElement('div'); d.textContent = 'Zeile ' + i; L.appendChild(d); }
+  function log(s) { console.log('[pointer] ' + s); }
+  var B = document.getElementById('btn');
+  B.addEventListener('mouseover', function (e) { log('over ' + e.clientX + ',' + e.clientY); });
+  B.addEventListener('mousedown', function (e) { log('down button=' + e.button + ' buttons=' + e.buttons + ' detail=' + e.detail); });
+  B.addEventListener('mouseup', function (e) { log('up button=' + e.button); });
+  B.addEventListener('click', function (e) { log('click ' + e.clientX + ',' + e.clientY + ' hover=' + B.matches(':hover')); });
+  B.addEventListener('mouseleave', function () { log('leave'); });
+  document.addEventListener('wheel', function (e) { log('wheel deltaY=' + e.deltaY + ' mode=' + e.deltaMode + ' target=' + (e.target.id || e.target.textContent)); });
+  L.addEventListener('scroll', function () { log('list scrollTop=' + L.scrollTop); });
+  log('bereit');
+</script>
+</body></html>

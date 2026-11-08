@@ -1,0 +1,59 @@
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
+@@ -48,6 +48,8 @@
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ #include <skia/core/SkCanvas.h>
+ #include <skia/core/SkPaint.h>
++#include <skia/gpu/ganesh/GrDirectContext.h>
++#include <skia/gpu/ganesh/gl/GrGLTypes.h>
+ #include <skia/core/SkColorSpace.h>
+ #include <skia/gpu/ganesh/GrBackendSurface.h>
+ #include <skia/gpu/ganesh/SkSurfaceGanesh.h>
+@@ -517,7 +519,46 @@
+                 paint.setColor(SK_ColorBLUE);
+                 canvas->drawRect(SkRect::MakeXYWH(600, 40, 240, 120), paint);
+             }
+-            bool ok = m_skiaSurface->readPixels(info, m_bitmap->mutableSpan().data(), m_bitmap->bytesPerRow(), 0, 0);
++            // Read back with the GL driver in BGRA (GL_EXT_read_format_bgra) straight into the
++            // SHM buffer instead of SkSurface::readPixels(), which reads RGBA into a temporary
++            // buffer and converts it with Skia's CPU raster pipeline - one more full-frame pass,
++            // and the place where the blank frames came from before the raster pipeline ABI fix
++            // (patch 0006). TVF_WEB_SKIA_READBACK=1 selects Skia's path again (to check that fix).
++            // Origin is top-left (not mirrored for SHM).
++            static const bool skiaReadback = getenv("TVF_WEB_SKIA_READBACK");
++            if (skiaReadback) {
++                bool ok = m_skiaSurface->readPixels(info, m_bitmap->mutableSpan().data(), m_bitmap->bytesPerRow(), 0, 0);
++                tvfLogReadback("skia-readpixels", m_bitmap.get(), ok);
++                return;
++            }
++            auto* grContext = PlatformDisplay::sharedDisplay().skiaGrContext();
++            grContext->flushAndSubmit(m_skiaSurface.get(), GrSyncCpu::kNo);
++            GLint previousFramebuffer = 0;
++            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
++            glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
++            while (glGetError() != GL_NO_ERROR) { }
++            glReadPixels(0, 0, m_bitmap->size().width(), m_bitmap->size().height(), GL_BGRA, GL_UNSIGNED_BYTE, m_bitmap->mutableSpan().data());
++            bool ok = glGetError() == GL_NO_ERROR;
++            if (!ok) {
++                // No GL_EXT_read_format_bgra: read RGBA and swap R/B here.
++                auto* pixels = m_bitmap->mutableSpan().data();
++                glReadPixels(0, 0, m_bitmap->size().width(), m_bitmap->size().height(), GL_RGBA, GL_UNSIGNED_BYTE, pixels);
++                ok = glGetError() == GL_NO_ERROR;
++                if (ok) {
++                    size_t count = m_bitmap->sizeInBytes();
++                    for (size_t i = 0; i + 3 < count; i += 4)
++                        std::swap(pixels[i], pixels[i + 2]);
++                }
++                static bool logged;
++                if (!logged && tvfGLDebug()) {
++                    logged = true;
++                    WTFLogAlways("[tvf-gl] glReadPixels GL_BGRA not supported, RGBA + swap: %s", ok ? "ok" : "FAILED");
++                }
++            }
++            glBindFramebuffer(GL_FRAMEBUFFER, previousFramebuffer);
++            grContext->resetContext(kRenderTarget_GrGLBackendState | kPixelStore_GrGLBackendState);
++            if (!ok)
++                ok = m_skiaSurface->readPixels(info, m_bitmap->mutableSpan().data(), m_bitmap->bytesPerRow(), 0, 0);
+             tvfLogReadback("skia-gl", m_bitmap.get(), ok);
+         } else {
+             bool ok = m_skiaSurface->readPixels(info, m_bitmap->mutableSpan().data(), m_bitmap->bytesPerRow(), 0, 0);

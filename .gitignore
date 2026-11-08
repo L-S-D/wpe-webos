@@ -1,0 +1,25 @@
+# Bau-Ergebnisse und grosse Baumaterialien (nur Rezepte, Patches und Quelltext versioniert)
+/build/
+/out/
+/sdk/build/
+/sdk/src/
+/sdk/stage/
+/sdk/sysroot/
+/sdk/stage-gst/
+/sdk/stage-media/
+/sdk/stage-ocdm/
+/sdk/logs/
+# Bibliotheken vom TV (libmali, libEGL, libGLESv2, libc): nicht weitergeben
+/sdk/fromtv/
+# Arbeitskopie fuer scripts/mkpatch.sh; massgeblich sind patches/webkit/
+/sdk/patchwork/
+# Ausgaben; nur die qemu-Testskripte gehoeren dazu
+/sdk/out/*
+!/sdk/out/qemu/
+/sdk/out/qemu/*
+!/sdk/out/qemu/*.sh
+# gebaute Proben
+/sdk/probe/eglprobe2
+/sdk/probe/gbmprobe
+/sdk/probe/pcstest-base
+/sdk/probe/pcstest-vfp

@@ -1,0 +1,286 @@
+--- a/Source/WebCore/platform/graphics/egl/GLContext.cpp
++++ b/Source/WebCore/platform/graphics/egl/GLContext.cpp
+@@ -38,8 +38,50 @@
+ #include <GLES2/gl2ext.h>
+ #endif
+ 
++#include <atomic>
++#include <wtf/Lock.h>
++
+ namespace WebCore {
+ 
++// TVF diagnostics (webOS/Mali bring-up): TVF_WEB_GL_DEBUG=1 creates debug
++// contexts and prints KHR_debug messages of the GL driver to stderr - this
++// build has no release logging, so WebKit's own GLContext logging is gone.
++static bool tvfGLDebug()
++{
++    static const bool enabled = getenv("TVF_WEB_GL_DEBUG");
++    return enabled;
++}
++
++static void tvfLogGLDebugMessage(GLenum source, GLenum type, GLuint identifier, GLenum severity, GLsizei, const GLchar* message, const void*)
++{
++    static std::atomic<unsigned> count { 0 };
++    unsigned n = count++;
++    if (n < 400)
++        WTFLogAlways("[tvf-gl] source=0x%x type=0x%x id=%u severity=0x%x: %s", source, type, identifier, severity, message);
++    else if (n == 400)
++        WTFLogAlways("[tvf-gl] more GL debug messages suppressed");
++}
++
++static void tvfEnableGLDebugOutput(EGLContext context)
++{
++    static Lock lock;
++    static Vector<EGLContext> enabledContexts;
++    {
++        Locker locker { lock };
++        if (enabledContexts.contains(context))
++            return;
++        enabledContexts.append(context);
++    }
++    const char* extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
++    bool hasDebug = extensions && strstr(extensions, "GL_KHR_debug");
++    WTFLogAlways("[tvf-gl] context %p current: %s / %s, KHR_debug %s", context, glGetString(GL_RENDERER), glGetString(GL_VERSION), hasDebug ? "yes" : "no");
++    if (!hasDebug)
++        return;
++    glDebugMessageCallbackKHR(tvfLogGLDebugMessage, nullptr);
++    glEnable(GL_DEBUG_OUTPUT_KHR);
++    glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_KHR);
++}
++
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(GLContext);
+ 
+ const char* GLContext::errorString(int statusCode)
+@@ -499,6 +541,11 @@
+     }
+ #endif
+ 
++    if (tvfGLDebug()) {
++        contextAttributes.append(EGL_CONTEXT_FLAGS_KHR);
++        contextAttributes.append(EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR);
++    }
++
+     contextAttributes.append(EGL_NONE);
+     return eglCreateContext(display.eglDisplay(), config, sharingContext, contextAttributes.span().data());
+ }
+@@ -538,6 +585,8 @@
+     auto display = m_display.get();
+     if (display && eglMakeCurrent(display->eglDisplay(), m_surface, m_surface, m_context)) {
+         didMakeContextCurrent();
++        if (tvfGLDebug()) [[unlikely]]
++            tvfEnableGLDebugOutput(m_context);
+         return true;
+     }
+ 
+--- a/Source/WebCore/platform/graphics/skia/SkiaBackingStore.cpp
++++ b/Source/WebCore/platform/graphics/skia/SkiaBackingStore.cpp
+@@ -340,6 +340,14 @@
+         m_cachedImage = SkImages::BorrowTextureFrom(grContext, backendTexture, kTopLeft_GrSurfaceOrigin, colorType, alphaType, SkColorSpace::MakeSRGB(), +[](void* userData) {
+             static_cast<BitmapTexture*>(userData)->deref();
+         }, m_texture.get());
++        if (!m_cachedImage) {
++            // TVF diagnostics: a tile Skia refuses to wrap is silently not drawn
++            static unsigned failures = 0;
++            if (failures++ < 5)
++                WTFLogAlways("[tvf-gl] tile texture %u %dx%d format 0x%x (%s) cannot be wrapped as SkImage",
++                    m_texture->id(), allocatedSize.width(), allocatedSize.height(), externalTexture.fFormat,
++                    colorType == kBGRA_8888_SkColorType ? "BGRA" : "RGBA");
++        }
+     }
+     return m_cachedImage;
+ }
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
+@@ -47,6 +47,7 @@
+ 
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ #include <skia/core/SkCanvas.h>
++#include <skia/core/SkPaint.h>
+ #include <skia/core/SkColorSpace.h>
+ #include <skia/gpu/ganesh/GrBackendSurface.h>
+ #include <skia/gpu/ganesh/SkSurfaceGanesh.h>
+@@ -90,6 +91,21 @@
+ #endif
+ 
+ namespace WebKit {
++
++// TVF diagnostics (webOS/Mali bring-up): TVF_WEB_GL_DEBUG=1 logs the swap
++// chain and what the shared-memory readback contains, TVF_WEB_TESTPATTERN=1
++// draws three bars into the frame right before it is read back.
++static bool tvfGLDebug()
++{
++    static const bool enabled = getenv("TVF_WEB_GL_DEBUG");
++    return enabled;
++}
++
++static bool tvfTestPattern()
++{
++    static const bool enabled = getenv("TVF_WEB_TESTPATTERN");
++    return enabled;
++}
+ using namespace WebCore;
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedSurface);
+@@ -152,8 +168,9 @@
+ 
+ void AcceleratedSurface::RenderTarget::createSkiaSurfaceForFramebuffer(unsigned fbo)
+ {
+-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
++    if (auto status = glCheckFramebufferStatus(GL_FRAMEBUFFER); status != GL_FRAMEBUFFER_COMPLETE) {
+         LOG_ERROR("AcceleratedSurface was unable to construct a complete framebuffer for the Skia render target");
++        WTFLogAlways("[tvf-gl] Skia render target: framebuffer %u incomplete (0x%x)", fbo, status);
+         return;
+     }
+ 
+@@ -161,6 +178,8 @@
+     glGetIntegerv(GL_STENCIL_BITS, &stencilBits);
+ 
+     auto& display = PlatformDisplay::sharedDisplay();
++    if (tvfGLDebug())
++        WTFLogAlways("[tvf-gl] fbo %u created in egl context %p, Skia GLContext egl %p", fbo, eglGetCurrentContext(), display.skiaGLContext() ? display.skiaGLContext()->platformContext() : nullptr);
+     GLContext::ScopedGLContextCurrent scopedCurrent(*display.skiaGLContext());
+ 
+     GrGLFramebufferInfo framebufferInfo;
+@@ -174,6 +193,8 @@
+ #endif
+     auto properties = FontRenderOptions::singleton().createSurfaceProps();
+     m_skiaSurface = SkSurfaces::WrapBackendRenderTarget(display.skiaGrContext(), backendRenderTarget, origin, kRGBA_8888_SkColorType, SkColorSpace::MakeSRGB(), &properties);
++    if (!m_skiaSurface || tvfGLDebug())
++        WTFLogAlways("[tvf-gl] Skia render target fbo %u %dx%d stencil %d: %s", fbo, m_size.width(), m_size.height(), stencilBits, m_skiaSurface ? "ok" : "FAILED");
+ }
+ 
+ #if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
+@@ -441,23 +462,72 @@
+ 
+ AcceleratedSurface::RenderTargetSHMImage::~RenderTargetSHMImage() = default;
+ 
++static void tvfLogReadback(const char* path, const ShareableBitmap& bitmap, bool readOk)
++{
++    static unsigned frames = 0;
++    if (!tvfGLDebug() || frames++ >= 12)
++        return;
++    auto span = bitmap.span();
++    unsigned width = bitmap.size().width(), height = bitmap.size().height(), stride = bitmap.bytesPerRow();
++    unsigned samples = 0, visible = 0, nonWhite = 0;
++    uint32_t first = 0, distinct = 0;
++    for (unsigned y = 0; y < height; y += 8) {
++        for (unsigned x = 0; x < width; x += 8) {
++            size_t offset = static_cast<size_t>(y) * stride + x * 4;
++            if (offset + 4 > span.size())
++                continue;
++            uint32_t pixel;
++            memcpy(&pixel, span.data() + offset, 4);
++            if (!samples)
++                first = pixel;
++            else if (pixel != first)
++                distinct++;
++            samples++;
++            if (pixel >> 24)
++                visible++;
++            if (pixel != 0xffffffff)
++                nonWhite++;
++        }
++    }
++    WTFLogAlways("[tvf-gl] readback %s frame %u: %ux%u read %s, glGetError 0x%x, samples %u visible %u non-white %u different-from-first %u, first BGRA %08x",
++        path, frames, width, height, readOk ? "ok" : "FAILED", glGetError(), samples, visible, nonWhite, distinct, first);
++}
++
+ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
+ {
+     if (m_surface->useSkia()) {
+-        if (!m_skiaSurface)
++        if (!m_skiaSurface) {
++            static bool logged = false;
++            if (!std::exchange(logged, true))
++                WTFLogAlways("[tvf-gl] SHM render target without Skia surface - frames are not read back");
+             return;
++        }
+ 
+         SkImageInfo info = SkImageInfo::Make(m_bitmap->size().width(), m_bitmap->size().height(), SkColorType::kBGRA_8888_SkColorType, SkAlphaType::kPremul_SkAlphaType);
+ 
+         if (m_surface->usesGL()) {
+             GLContext::ScopedGLContextCurrent scopedCurrent(*PlatformDisplay::sharedDisplay().skiaGLContext());
+-            m_skiaSurface->readPixels(info, m_bitmap->mutableSpan().data(), m_bitmap->bytesPerRow(), 0, 0);
+-        } else
+-            m_skiaSurface->readPixels(info, m_bitmap->mutableSpan().data(), m_bitmap->bytesPerRow(), 0, 0);
++            if (tvfTestPattern()) [[unlikely]] {
++                auto* canvas = m_skiaSurface->getCanvas();
++                SkPaint paint;
++                paint.setColor(SK_ColorRED);
++                canvas->drawRect(SkRect::MakeXYWH(40, 40, 240, 120), paint);
++                paint.setColor(SK_ColorGREEN);
++                canvas->drawRect(SkRect::MakeXYWH(320, 40, 240, 120), paint);
++                paint.setColor(SK_ColorBLUE);
++                canvas->drawRect(SkRect::MakeXYWH(600, 40, 240, 120), paint);
++            }
++            bool ok = m_skiaSurface->readPixels(info, m_bitmap->mutableSpan().data(), m_bitmap->bytesPerRow(), 0, 0);
++            tvfLogReadback("skia-gl", m_bitmap.get(), ok);
++        } else {
++            bool ok = m_skiaSurface->readPixels(info, m_bitmap->mutableSpan().data(), m_bitmap->bytesPerRow(), 0, 0);
++            tvfLogReadback("skia-cpu", m_bitmap.get(), ok);
++        }
+         return;
+     }
+ 
+     glReadPixels(0, 0, m_bitmap->size().width(), m_bitmap->size().height(), GL_BGRA, GL_UNSIGNED_BYTE, m_bitmap->mutableSpan().data());
++    tvfLogReadback("gl", m_bitmap.get(), true);
+ }
+ 
+ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetTexture::create(AcceleratedSurface& surface, const IntSize& size)
+@@ -594,6 +664,9 @@
+ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+     : m_surface(surface)
+ {
++    if (tvfGLDebug())
++        WTFLogAlways("[tvf-gl] swap chain: display type %d, hardware acceleration %d, uses GL %d, Skia composition %d",
++            static_cast<int>(PlatformDisplay::sharedDisplay().type()), m_surface->hardwareAccelerationEnabled(), m_surface->usesGL(), m_surface->useSkia());
+ #if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
+     if (!m_surface->hardwareAccelerationEnabled()) {
+         m_type = Type::SharedMemory;
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
+@@ -37,6 +37,7 @@
+ #include <WebCore/Damage.h>
+ #include <WebCore/FontCache.h>
+ #include <WebCore/Page.h>
++#include <WebCore/GLContext.h>
+ #include <WebCore/PlatformDisplay.h>
+ #include <WebCore/Settings.h>
+ #include <WebCore/SkiaCompositingLayer.h>
+@@ -448,6 +449,17 @@
+ 
+ TargetContents ThreadedCompositor::paintToSkiaCanvas(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
+ {
++    // TVF diagnostics: which EGL context is current when Skia composites
++    static const bool tvfGLDebug = getenv("TVF_WEB_GL_DEBUG");
++    static unsigned tvfFrames = 0;
++    if (tvfGLDebug && tvfFrames++ < 6) {
++        auto* skiaContext = PlatformDisplay::sharedDisplay().skiaGLContext();
++        auto* tracked = GLContext::current();
++        WTFLogAlways("[tvf-gl] compositor frame %u: thread %p, eglGetCurrentContext %p, tracked GLContext %p (egl %p), Skia GLContext %p (egl %p), GrContext %p",
++            tvfFrames, &Thread::currentSingleton(), eglGetCurrentContext(), tracked, tracked ? tracked->platformContext() : nullptr,
++            skiaContext, skiaContext ? skiaContext->platformContext() : nullptr, PlatformDisplay::sharedDisplay().skiaGrContext());
++    }
++
+     auto* canvas = m_surface->canvas();
+     if (!canvas)
+         return TargetContents::Invalid;
+--- a/Source/WebKit/WebProcess/glib/WebProcessGLib.cpp
++++ b/Source/WebKit/WebProcess/glib/WebProcessGLib.cpp
+@@ -174,9 +174,13 @@
+     }
+ #endif
+ 
+-    if (auto display = PlatformDisplaySurfaceless::create()) {
+-        PlatformDisplay::setSharedDisplay(WTF::move(display));
+-        return;
++    // TVF tests: TVF_WEB_EGL_DEFAULT=1 skips the surfaceless display, so that
++    // the vendor-EGL path of webOS/Mali can be exercised with Mesa, too
++    if (!getenv("TVF_WEB_EGL_DEFAULT")) {
++        if (auto display = PlatformDisplaySurfaceless::create()) {
++            PlatformDisplay::setSharedDisplay(WTF::move(display));
++            return;
++        }
+     }
+ 
+ #if PLATFORM(GTK) || PLATFORM(WPE) || OS(ANDROID)

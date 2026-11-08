@@ -1,0 +1,64 @@
+--- a/Source/WebCore/platform/graphics/gstreamer/WebKitWebSourceGStreamer.cpp
++++ b/Source/WebCore/platform/graphics/gstreamer/WebKitWebSourceGStreamer.cpp
+@@ -123,6 +123,9 @@
+         unsigned requestNumber { 1 };
+         uint64_t requestedPosition { 0 };
+         uint64_t stopPosition { UINT64_MAX };
++        // A range request answered with the whole resource (200): bytes before requestedPosition
++        // still to drop.
++        uint64_t bytesToSkip { 0 };
+ 
+         bool isRequestPending { true };
+         HashSet<RefPtr<WebCore::SecurityOrigin>> origins;
+@@ -1086,7 +1089,15 @@
+         return;
+     }
+ 
+-    if (members->requestedPosition) {
++    members->bytesToSkip = 0;
++    if (members->requestedPosition && response.httpStatusCode() == httpStatus200OK) {
++        // Some servers advertise Accept-Ranges but answer a range request with the whole resource
++        // (CDNs that package DASH segments on the fly). This happens when a stopped download is
++        // resumed (stopLoaderIfNeeded): drop the bytes before the requested position instead of
++        // failing, and do not stop and restart this resource again (see isSeekable below).
++        GST_DEBUG_OBJECT(src.get(), "R%u: 200 for a range request, dropping the first %" G_GUINT64_FORMAT " bytes", m_requestNumber, members->requestedPosition);
++        members->bytesToSkip = members->requestedPosition;
++    } else if (members->requestedPosition) {
+         // Seeking ... we expect a 206 == PARTIAL_CONTENT
+         if (response.httpStatusCode() != httpStatus206PartialContent) {
+             // Range request completely failed.
+@@ -1099,7 +1110,7 @@
+         GST_DEBUG_OBJECT(src.get(), "R%u: Range request succeeded", m_requestNumber);
+     }
+ 
+-    members->isSeekable = length > 0 && g_ascii_strcasecmp("none", response.httpHeaderField(HTTPHeaderName::AcceptRanges).utf8().data());
++    members->isSeekable = length > 0 && g_ascii_strcasecmp("none", response.httpHeaderField(HTTPHeaderName::AcceptRanges).utf8().data()) && !members->bytesToSkip;
+ 
+     GST_DEBUG_OBJECT(src.get(), "R%u: Size: %" G_GUINT64_FORMAT ", isSeekable: %s", m_requestNumber, length, boolForPrinting(members->isSeekable));
+     if (length > 0)
+@@ -1197,7 +1208,16 @@
+         members->downloadStartTime = WallTime::now();
+     }
+ 
+-    int length = data.size();
++    auto dataSpan = data.span();
++    if (members->bytesToSkip) {
++        size_t skip = std::min<uint64_t>(members->bytesToSkip, dataSpan.size());
++        members->bytesToSkip -= skip;
++        dataSpan = dataSpan.subspan(skip);
++        if (dataSpan.empty())
++            return;
++    }
++
++    int length = dataSpan.size();
+     GST_LOG_OBJECT(src.get(), "R%u: Have %d bytes of data", m_requestNumber, length);
+ 
+     members->readPosition += length;
+@@ -1207,7 +1227,6 @@
+         gst_structure_new("webkit-network-statistics", "read-position", G_TYPE_UINT64, members->readPosition, "size", G_TYPE_UINT64, members->size.value_or(0), nullptr)));
+ 
+     checkUpdateBlocksize(length);
+-    auto dataSpan = data.span();
+     GstBuffer* buffer = gstBufferNewWrappedFast(fastMemDup(dataSpan.data(), dataSpan.size()), length);
+     gst_adapter_push(members->adapter.get(), buffer);
+ 

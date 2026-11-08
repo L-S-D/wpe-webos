@@ -1,0 +1,30 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# TVF: WebKit build with media on this machine (WSL2 + Docker), made by wsl/pack.sh full.
+# Fetches the work tree, the webOS SDK and the build image from the TVF host, then builds
+# (wsl-build.sh). In WSL:  curl -fsSO @SRC@/setup-wsl.sh && sh setup-wsl.sh
+# setup-wsl.sh --no-build: only fetch. TVF_BUILD_DIR: target (default ~/tvf-build).
+set -e
+SRC=@SRC@
+DEST=${TVF_BUILD_DIR:-$HOME/tvf-build}
+case "$DEST" in
+/mnt/*) echo "FEHLER: $DEST liegt auf einem Windows-Laufwerk (dort ist der Bau sehr langsam)."
+        echo "        Ein Verzeichnis in WSL nehmen, z. B. TVF_BUILD_DIR=~/tvf-build"; exit 1 ;;
+esac
+for c in curl tar gzip python3 docker; do
+    command -v $c > /dev/null || { echo "FEHLER: $c fehlt (sudo apt install $c)"; exit 1; }
+done
+docker info > /dev/null 2>&1 || {
+    echo "FEHLER: Docker ist aus WSL nicht erreichbar."
+    echo "        Docker Desktop: Settings > Resources > WSL integration > diese Distribution einschalten"
+    exit 1; }
+mkdir -p "$DEST/webos-sdk"
+echo "== Arbeitsbaum (wpe-webos, Quellen, Sysroot)"
+curl -fS --progress-bar "$SRC/wpe-webos.tar.gz" | tar -xz -C "$DEST"
+echo "== webOS-SDK"
+curl -fS --progress-bar "$SRC/webos-sdk.tar.gz" | tar -xz -C "$DEST/webos-sdk"
+echo "== Bau-Image tvf-web-sdkbuild"
+curl -fS --progress-bar "$SRC/image-sdkbuild.tar.gz" | docker load
+echo "== eingerichtet in $DEST ($(nproc) Threads, $(awk '/MemTotal/ { print int($2 / 1048576) }' /proc/meminfo) GB RAM in WSL)"
+[ "${1:-}" = --no-build ] && { echo "Bauen: sh $DEST/wsl-build.sh"; exit 0; }
+exec sh "$DEST/wsl-build.sh"

@@ -1,0 +1,51 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# TVF: WPE WebKit with media (video, MSE, EME, GStreamer -> TVF sinks) for the webOS TV -
+# build, install, TVF sinks and tvf-web from the current sources, bundle, then upload bundle
+# and logs to the TVF host. Resumable: run it again and ninja continues where it stopped.
+# JOBS=n overrides the job count (default: threads, at most one per 2 GB of free memory).
+D=$(cd "$(dirname "$0")" && pwd)
+SRC=@SRC@
+export WEBOS_SDK_HOST="$D/webos-sdk/arm-webos-linux-gnueabi_sdk-buildroot"
+cd "$D/wpe-webos/sdk" || exit 1
+mkdir -p logs out
+T=$(nproc)
+M=$(awk '/MemAvailable/ { print int($2 / 1048576) }' /proc/meminfo)
+J=${JOBS:-$(( M / 2 < T ? M / 2 : T ))}
+[ "$J" -ge 1 ] || J=1
+up() {
+    if curl -fsS -T "$1" "$SRC/upload/$(basename "$1")" > /dev/null; then
+        echo "   an den TVF-Host geschickt: $(basename "$1")"
+    else
+        echo "   $(basename "$1") nicht geschickt (TVF-Host nicht erreichbar) - liegt in $PWD/$1"
+    fi
+}
+step() { # log command... (stops with the log's tail on failure)
+    l=$1; shift
+    if ! "$@" > "$l" 2>&1; then
+        tail -20 "$l"; up "$l"; exit 1
+    fi
+}
+echo "== WebKit mit Medien: $T Threads, $M GB frei, JOBS=$J (Log: $PWD/logs/webkit-media-build.log)"
+t0=$(date +%s)
+( MEDIA=1 KEEP_GOING=1 JOBS=$J ./scripts/run.sh sh scripts/build-webkit.sh build; echo "exit $?" ) 2>&1 \
+    | tee logs/webkit-media-build.log
+if ! grep -q '^exit 0$' logs/webkit-media-build.log; then
+    echo "== Bau mit Fehlern:"
+    grep -E '^FAILED:|error:' logs/webkit-media-build.log | head -30
+    up logs/webkit-media-build.log
+    exit 1
+fi
+echo "== installieren"
+step logs/webkit-media-install.log env MEDIA=1 ./scripts/run.sh sh scripts/build-webkit.sh install
+echo "== TVF-Sinks und tvf-web"
+step logs/gst-tvf.log ./scripts/run.sh sh scripts/build-gst-tvf.sh
+step logs/helper.log ./scripts/run.sh sh scripts/build-helper.sh
+echo "== Bundle"
+python3 scripts/bundle-sdk.py out/tvf-web-sdk-media-armhf --media 2>&1 | tee logs/bundle-media.log
+[ -x out/tvf-web-sdk-media-armhf/bin/tvf-web ] || { up logs/bundle-media.log; exit 1; }
+tar -czf out/tvf-web-sdk-media-armhf.tgz -C out tvf-web-sdk-media-armhf
+echo "== fertig nach $(( ($(date +%s) - t0) / 60 )) min: $PWD/out/tvf-web-sdk-media-armhf.tgz"
+up out/tvf-web-sdk-media-armhf.tgz
+up logs/webkit-media-build.log
+up logs/bundle-media.log

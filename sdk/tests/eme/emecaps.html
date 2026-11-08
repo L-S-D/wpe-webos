@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>EME caps</title></head>
+<body style="background:#000;color:#ccc;font:16px monospace">
+<pre id="log"></pre>
+<script>
+// Which key system configurations does WebKit grant? One line per probe.
+var out = document.getElementById('log');
+function log(m) { console.log('[caps] ' + m); out.textContent += m + '\n'; }
+var V = 'video/mp4;codecs="avc1.42c01e"', A = 'audio/mp4;codecs="mp4a.40.2"';
+var probes = [
+  ['leer', {}],
+  ['nur cenc', { initDataTypes: ['cenc'] }],
+  ['video', { initDataTypes: ['cenc'], videoCapabilities: [{ contentType: V }] }],
+  ['audio', { initDataTypes: ['cenc'], audioCapabilities: [{ contentType: A }] }],
+  ['video+audio', { initDataTypes: ['cenc'], videoCapabilities: [{ contentType: V }], audioCapabilities: [{ contentType: A }] }],
+  ['wie dash.js', { initDataTypes: ['cenc'], videoCapabilities: [{ contentType: V, robustness: '' }],
+                    audioCapabilities: [{ contentType: A, robustness: '' }], distinctiveIdentifier: 'optional',
+                    persistentState: 'optional', sessionTypes: ['temporary'] }],
+  ['HW_SECURE_ALL', { initDataTypes: ['cenc'], videoCapabilities: [{ contentType: V, robustness: 'HW_SECURE_ALL' }] }],
+  ['video ohne codecs', { initDataTypes: ['cenc'], videoCapabilities: [{ contentType: 'video/mp4' }] }]
+];
+log('MediaSource.isTypeSupported(V) = ' + MediaSource.isTypeSupported(V) + ', (A) = ' + MediaSource.isTypeSupported(A));
+log('canPlayType(V) = "' + document.createElement('video').canPlayType(V) + '"');
+var ks = ['com.widevine.alpha', 'com.microsoft.playready', 'org.w3.clearkey'];
+var chain = Promise.resolve();
+ks.forEach(function (k) {
+  probes.forEach(function (p) {
+    chain = chain.then(function () {
+      return navigator.requestMediaKeySystemAccess(k, [p[1]]).then(function (a) {
+        log(k + ' / ' + p[0] + ': JA ' + JSON.stringify(a.getConfiguration()).slice(0, 160));
+      }, function (e) {
+        log(k + ' / ' + p[0] + ': nein (' + e.name + ': ' + e.message + ')');
+      });
+    });
+  });
+});
+chain.then(function () { log('fertig'); });
+</script></body></html>

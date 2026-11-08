@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><title>mixed</title></head>
+<body style="background:#000;color:#ccc;font:16px monospace"><pre id="log"></pre>
+<script>
+// https page, script from http://127.0.0.1 (like dash.js from TVF's relay for the OIPF
+// replacement): patch 0015 lets loopback through, without it WebKit blocks it as mixed content
+var out = document.getElementById('log');
+function log(m) { console.log('[mixed] ' + m); out.textContent += m + '\n'; }
+log('Seite ' + location.protocol + ' isSecureContext=' + window.isSecureContext);
+var s = document.createElement('script');
+s.src = 'http://127.0.0.1:8794/loopback.js';
+s.onload = function () { log('Skript von http://127.0.0.1: geladen, ausgefuehrt=' + (window.__loopback === 1)); };
+s.onerror = function () { log('Skript von http://127.0.0.1: GESPERRT/Fehler'); };
+document.head.appendChild(s);
+// no-cors: der Testserver schickt keinen CORS-Kopf (Port 8794 ist ein anderer Ursprung) -
+// ohne CORS-Pruefung scheitert der Abruf nur noch an einer Sperre fuer gemischte Inhalte
+fetch('http://127.0.0.1:8794/loopback.js', { mode: 'no-cors' }).then(function (r) { log('fetch http://127.0.0.1 (no-cors): erlaubt, ' + r.type); },
+  function (e) { log('fetch http://127.0.0.1 (no-cors): GESPERRT/Fehler ' + e); });
+// Gegenprobe: kein Loopback bleibt gemischter Inhalt (gesperrt -> sofort onerror; nicht
+// gesperrt -> Verbindungsversuch ins Leere, keine Meldung vor "fertig")
+var o = document.createElement('script');
+o.src = 'http://192.0.2.1/other.js';
+o.onerror = function () { log('Skript von http://192.0.2.1 (kein Loopback): gesperrt (erwartet)'); };
+document.head.appendChild(o);
+setTimeout(function () { log('fertig'); }, 3000);
+</script></body></html>

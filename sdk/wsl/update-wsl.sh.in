@@ -1,0 +1,13 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# TVF: new state of the work tree onto the build machine and build again (made by
+# wsl/pack.sh update; the machine was set up with setup-wsl.sh before). In WSL:
+#   curl -fsSO @SRC@/update-wsl.sh && sh update-wsl.sh      (--no-build: only update)
+set -e
+SRC=@SRC@
+DEST=${TVF_BUILD_DIR:-$HOME/tvf-build}
+[ -d "$DEST/wpe-webos/sdk" ] || { echo "FEHLER: $DEST ist nicht eingerichtet (erst setup-wsl.sh)"; exit 1; }
+echo "== Arbeitsbaum aktualisieren"
+curl -fS --progress-bar "$SRC/wpe-webos-update.tar.gz" | tar -xz -C "$DEST"
+[ "${1:-}" = --no-build ] && exit 0
+exec sh "$DEST/wsl-build.sh"

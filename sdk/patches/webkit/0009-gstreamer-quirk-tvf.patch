@@ -1,0 +1,352 @@
+--- a/Source/WebCore/platform/gstreamer/GStreamerQuirkTVF.h
++++ b/Source/WebCore/platform/gstreamer/GStreamerQuirkTVF.h
+@@ -0,0 +1,46 @@
++/*
++ * Copyright (C) 2026 L-S-D
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Library General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Library General Public License for more details.
++ */
++
++#pragma once
++
++#if USE(GSTREAMER)
++
++#include "GStreamerQuirks.h"
++
++namespace WebCore {
++
++// TVF (webOS TV): the sinks tvfvideosink/tvfaudiosink take the streams still
++// encoded and hand them to TVF, which feeds the TV's hardware decoder - the
++// split of Rialto (a media server owns the decoder), with TVF as the server.
++class GStreamerQuirkTVF final : public GStreamerQuirk {
++public:
++    GStreamerQuirkTVF();
++    const ASCIILiteral identifier() const final { return "TVF"_s; }
++    bool isPlatformSupported() const final;
++
++    void configureElement(GstElement*, const OptionSet<ElementRuntimeCharacteristics>&) final;
++    GstElement* createAudioSink() final;
++    std::optional<bool> isHardwareAccelerated(GstElementFactory*) final;
++    unsigned getAdditionalPlaybinFlags() const final { return getGstPlayFlag("text") | getGstPlayFlag("native-audio") | getGstPlayFlag("native-video"); }
++    std::optional<GstState> eosMediaPlayerState() const final { return GST_STATE_PAUSED; }
++    bool needsBufferingPercentageCorrection() const final { return true; }
++    int correctBufferingPercentage(MediaPlayerPrivateGStreamer*, int originalBufferingPercentage, GstBufferingMode) const final;
++
++private:
++    GRefPtr<GstCaps> m_sinkCaps;
++};
++
++} // namespace WebCore
++
++#endif // USE(GSTREAMER)
+--- a/Source/WebCore/platform/gstreamer/GStreamerQuirkTVF.cpp
++++ b/Source/WebCore/platform/gstreamer/GStreamerQuirkTVF.cpp
+@@ -0,0 +1,137 @@
++/*
++ * Copyright (C) 2026 L-S-D
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Library General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Library General Public License for more details.
++ */
++
++#include "config.h"
++#include "GStreamerQuirkTVF.h"
++
++#if USE(GSTREAMER)
++
++#include "GStreamerCommon.h"
++#include <array>
++#include <wtf/OptionSet.h>
++
++namespace WebCore {
++
++GST_DEBUG_CATEGORY_STATIC(webkit_tvf_quirks_debug);
++#define GST_CAT_DEFAULT webkit_tvf_quirks_debug
++
++GStreamerQuirkTVF::GStreamerQuirkTVF()
++{
++    GST_DEBUG_CATEGORY_INIT(webkit_tvf_quirks_debug, "webkitquirkstvf", 0, "WebKit TVF Quirks");
++
++    // What the sinks take (encoded): uridecodebin3 stops at these caps instead
++    // of looking for decoders, which this platform does not have.
++    std::array<ASCIILiteral, 2> sinks = { "tvfvideosink"_s, "tvfaudiosink"_s };
++    for (auto sink : sinks) {
++        GRefPtr sinkFactory = adoptGRef(gst_element_factory_find(sink.characters()));
++        if (!sinkFactory) [[unlikely]]
++            continue;
++
++        gst_object_unref(gst_plugin_feature_load(GST_PLUGIN_FEATURE(sinkFactory.get())));
++        for (auto* item = gst_element_factory_get_static_pad_templates(sinkFactory.get()); item; item = g_list_next(item)) {
++            auto* padTemplate = static_cast<GstStaticPadTemplate*>(item->data);
++            if (padTemplate->direction != GST_PAD_SINK)
++                continue;
++            GRefPtr<GstCaps> templateCaps = adoptGRef(gst_static_caps_get(&padTemplate->static_caps));
++            if (!templateCaps || gst_caps_is_empty(templateCaps.get()) || gst_caps_is_any(templateCaps.get()))
++                continue;
++            if (m_sinkCaps)
++                m_sinkCaps = adoptGRef(gst_caps_merge(m_sinkCaps.leakRef(), templateCaps.leakRef()));
++            else
++                m_sinkCaps = WTF::move(templateCaps);
++        }
++    }
++}
++
++bool GStreamerQuirkTVF::isPlatformSupported() const
++{
++    GRefPtr sinkFactory = adoptGRef(gst_element_factory_find("tvfvideosink"));
++    if (!sinkFactory)
++        return false;
++    return gst_plugin_feature_get_rank(GST_PLUGIN_FEATURE(sinkFactory.get())) > GST_RANK_MARGINAL;
++}
++
++// parsebin (urisourcebin for MSE, decodebin3 for files): a stream that is
++// parsed/framed already and that the sinks take goes out as it is. A second
++// parser would only rewrite time stamps - WebKit's MSE clamps the negative DTS
++// of the first B-frame pictures to 0 and h264parse then moves their PTS. The
++// sinks convert themselves (avc -> byte-stream, raw AAC -> ADTS). Connected
++// before WebKit's own handler, which then is not asked.
++static unsigned tvfParsebinAutoplugSelect(GstElement*, GstPad*, GstCaps* caps, GstElementFactory* factory, GstCaps* sinkCaps)
++{
++    static auto tryAutoPlug = *gstGetAutoplugSelectResult("try"_s);
++    static auto exposeAutoPlug = *gstGetAutoplugSelectResult("expose"_s);
++    if (!gst_element_factory_list_is_type(factory, GST_ELEMENT_FACTORY_TYPE_PARSER))
++        return tryAutoPlug;
++    auto* structure = gst_caps_get_structure(caps, 0);
++    gboolean parsed = FALSE;
++    gboolean framed = FALSE;
++    gst_structure_get_boolean(structure, "parsed", &parsed);
++    gst_structure_get_boolean(structure, "framed", &framed);
++    bool complete = parsed || framed || !g_strcmp0(gst_structure_get_string(structure, "alignment"), "au");
++    if (complete && gst_caps_can_intersect(caps, sinkCaps)) {
++        GST_DEBUG("Exposing %" GST_PTR_FORMAT " without %s", caps, GST_OBJECT_NAME(factory));
++        return exposeAutoPlug;
++    }
++    return tryAutoPlug;
++}
++
++void GStreamerQuirkTVF::configureElement(GstElement* element, const OptionSet<ElementRuntimeCharacteristics>&)
++{
++    if (!m_sinkCaps)
++        return;
++    auto typeName = unsafeSpan(G_OBJECT_TYPE_NAME(G_OBJECT(element)));
++    if (equal(typeName, "GstURIDecodeBin3"_s)) {
++        GRefPtr<GstCaps> defaultCaps;
++        g_object_get(element, "caps", &defaultCaps.outPtr(), nullptr);
++        defaultCaps = adoptGRef(gst_caps_merge(gst_caps_ref(m_sinkCaps.get()), defaultCaps.leakRef()));
++        GST_INFO("Setting stop caps to %" GST_PTR_FORMAT, defaultCaps.get());
++        g_object_set(element, "caps", defaultCaps.get(), nullptr);
++    }
++
++    // the quirk lives as long as the process, so do its caps
++    if (equal(typeName, "GstParseBin"_s))
++        g_signal_connect(element, "autoplug-select", G_CALLBACK(tvfParsebinAutoplugSelect), m_sinkCaps.get());
++}
++
++GstElement* GStreamerQuirkTVF::createAudioSink()
++{
++    auto sink = makeGStreamerElement("tvfaudiosink"_s);
++    RELEASE_ASSERT_WITH_MESSAGE(sink, "tvfaudiosink should be available but it is not");
++    return sink;
++}
++
++std::optional<bool> GStreamerQuirkTVF::isHardwareAccelerated(GstElementFactory* factory)
++{
++    if (StringView::fromLatin1(GST_OBJECT_NAME(factory)).startsWith("tvf"_s))
++        return true;
++    return std::nullopt;
++}
++
++// The TV's decoder holds seconds of data and rides out underruns itself (its
++// position just stops). WebKit's in-memory buffering only sees the small queue
++// in front of the sinks, which they drain in bursts whenever the TV takes data
++// - it would pause and resume the pipeline several times a second (and every
++// pause and resume goes on to the TV). Like the Broadcom quirk adds the data
++// in its decoder, this counts the queue as full.
++int GStreamerQuirkTVF::correctBufferingPercentage(MediaPlayerPrivateGStreamer*, int originalBufferingPercentage, GstBufferingMode mode) const
++{
++    return mode == GST_BUFFERING_STREAM ? 100 : originalBufferingPercentage;
++}
++
++#undef GST_CAT_DEFAULT
++
++} // namespace WebCore
++
++#endif // USE(GSTREAMER)
+--- a/Source/WebCore/platform/gstreamer/GStreamerHolePunchQuirkTVF.h
++++ b/Source/WebCore/platform/gstreamer/GStreamerHolePunchQuirkTVF.h
+@@ -0,0 +1,35 @@
++/*
++ * Copyright (C) 2026 L-S-D
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Library General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Library General Public License for more details.
++ */
++
++#pragma once
++
++#if USE(GSTREAMER)
++
++#include "GStreamerQuirks.h"
++
++namespace WebCore {
++
++// TVF: the video plane lies below the page; tvfvideosink passes the hole's
++// rectangle on to TVF, which places the TV's video window there.
++class GStreamerHolePunchQuirkTVF final : public GStreamerHolePunchQuirk {
++public:
++    const ASCIILiteral identifier() const final { return "TVFHolePunch"_s; }
++
++    GstElement* createHolePunchVideoSink(bool, const MediaPlayer*) final;
++    bool setHolePunchVideoRectangle(GstElement*, const IntRect&) final;
++};
++
++} // namespace WebCore
++
++#endif // USE(GSTREAMER)
+--- a/Source/WebCore/platform/gstreamer/GStreamerHolePunchQuirkTVF.cpp
++++ b/Source/WebCore/platform/gstreamer/GStreamerHolePunchQuirkTVF.cpp
+@@ -0,0 +1,42 @@
++/*
++ * Copyright (C) 2026 L-S-D
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Library General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Library General Public License for more details.
++ */
++
++#include "config.h"
++#include "GStreamerHolePunchQuirkTVF.h"
++
++#if USE(GSTREAMER)
++
++#include "GStreamerCommon.h"
++#include <wtf/text/MakeString.h>
++
++namespace WebCore {
++
++GstElement* GStreamerHolePunchQuirkTVF::createHolePunchVideoSink(bool, const MediaPlayer*)
++{
++    return makeGStreamerElement("tvfvideosink"_s);
++}
++
++bool GStreamerHolePunchQuirkTVF::setHolePunchVideoRectangle(GstElement* videoSink, const IntRect& rect)
++{
++    if (!gstObjectHasProperty(videoSink, "rectangle"_s)) [[unlikely]]
++        return false;
++
++    auto rectString = makeString(rect.x(), ',', rect.y(), ',', rect.width(), ',', rect.height());
++    g_object_set(videoSink, "rectangle", rectString.ascii().data(), nullptr);
++    return true;
++}
++
++} // namespace WebCore
++
++#endif // USE(GSTREAMER)
+--- a/Source/WebCore/platform/gstreamer/GStreamerQuirks.cpp
++++ b/Source/WebCore/platform/gstreamer/GStreamerQuirks.cpp
+@@ -27,6 +27,7 @@
+ #include "GStreamerHolePunchQuirkBcmNexus.h"
+ #include "GStreamerHolePunchQuirkFake.h"
+ #include "GStreamerHolePunchQuirkRialto.h"
++#include "GStreamerHolePunchQuirkTVF.h"
+ #include "GStreamerHolePunchQuirkWesteros.h"
+ #include "GStreamerQuirkAmLogic.h"
+ #include "GStreamerQuirkBcmNexus.h"
+@@ -35,6 +36,7 @@
+ #include "GStreamerQuirkQualcomm.h"
+ #include "GStreamerQuirkRealtek.h"
+ #include "GStreamerQuirkRialto.h"
++#include "GStreamerQuirkTVF.h"
+ #include "GStreamerQuirkWesteros.h"
+ #include <optional>
+ #include <wtf/NeverDestroyed.h>
+@@ -88,7 +90,7 @@
+     GST_DEBUG("Attempting to parse requested quirks: %s", GST_STR_NULL(quirksString.utf8()));
+     if (quirksString) {
+         if (WTF::equalLettersIgnoringASCIICase(quirksString.span(), "help"_s)) {
+-            gst_printerrln("Supported quirks for WEBKIT_GST_QUIRKS are: amlogic, broadcom, bcmnexus, openmax, qualcomm, realtek, rialto, westeros");
++            gst_printerrln("Supported quirks for WEBKIT_GST_QUIRKS are: amlogic, broadcom, bcmnexus, openmax, qualcomm, realtek, rialto, tvf, westeros");
+             return;
+         }
+ 
+@@ -108,6 +110,8 @@
+                 quirk = WTF::makeUnique<GStreamerQuirkRealtek>();
+             else if (WTF::equalLettersIgnoringASCIICase(identifier, "rialto"_s))
+                 quirk = WTF::makeUnique<GStreamerQuirkRialto>();
++            else if (WTF::equalLettersIgnoringASCIICase(identifier, "tvf"_s))
++                quirk = WTF::makeUnique<GStreamerQuirkTVF>();
+             else if (WTF::equalLettersIgnoringASCIICase(identifier, "westeros"_s))
+                 quirk = WTF::makeUnique<GStreamerQuirkWesteros>();
+             else {
+@@ -131,6 +135,7 @@
+         ADD_QUIRK(Qualcomm);
+         ADD_QUIRK(Realtek);
+         ADD_QUIRK(Rialto);
++        ADD_QUIRK(TVF);
+         ADD_QUIRK(Westeros);
+ #undef ADD_QUIRK
+ 
+@@ -150,7 +155,7 @@
+         return;
+ 
+     if (WTF::equalLettersIgnoringASCIICase(identifierString.span(), "help"_s)) {
+-        gst_printerrln("Supported quirks for WEBKIT_GST_HOLE_PUNCH_QUIRK are: fake, bcmnexus, rialto, westeros");
++        gst_printerrln("Supported quirks for WEBKIT_GST_HOLE_PUNCH_QUIRK are: fake, bcmnexus, rialto, tvf, westeros");
+         return;
+     }
+ 
+@@ -159,6 +164,8 @@
+         m_holePunchQuirk = WTF::makeUnique<GStreamerHolePunchQuirkBcmNexus>();
+     else if (WTF::equalLettersIgnoringASCIICase(identifierString.span(), "rialto"_s))
+         m_holePunchQuirk = WTF::makeUnique<GStreamerHolePunchQuirkRialto>();
++    else if (WTF::equalLettersIgnoringASCIICase(identifierString.span(), "tvf"_s))
++        m_holePunchQuirk = WTF::makeUnique<GStreamerHolePunchQuirkTVF>();
+     else if (WTF::equalLettersIgnoringASCIICase(identifierString.span(), "westeros"_s))
+         m_holePunchQuirk = WTF::makeUnique<GStreamerHolePunchQuirkWesteros>();
+     else if (WTF::equalLettersIgnoringASCIICase(identifierString.span(), "fake"_s))
+--- a/Source/WebCore/platform/SourcesGStreamer.txt
++++ b/Source/WebCore/platform/SourcesGStreamer.txt
+@@ -104,6 +104,7 @@
+ platform/gstreamer/GStreamerElementHarness.cpp
+ platform/gstreamer/GStreamerHolePunchQuirkBcmNexus.cpp
+ platform/gstreamer/GStreamerHolePunchQuirkRialto.cpp
++platform/gstreamer/GStreamerHolePunchQuirkTVF.cpp
+ platform/gstreamer/GStreamerHolePunchQuirkWesteros.cpp
+ platform/gstreamer/GStreamerQuirkAmLogic.cpp
+ platform/gstreamer/GStreamerQuirkBcmNexus.cpp
+@@ -113,6 +114,7 @@
+ platform/gstreamer/GStreamerQuirkQualcomm.cpp
+ platform/gstreamer/GStreamerQuirkRealtek.cpp
+ platform/gstreamer/GStreamerQuirkRialto.cpp
++platform/gstreamer/GStreamerQuirkTVF.cpp
+ platform/gstreamer/GStreamerQuirkWesteros.cpp
+ platform/gstreamer/GStreamerQuirks.cpp
+ platform/gstreamer/PlatformSpeechSynthesizerGStreamer.cpp

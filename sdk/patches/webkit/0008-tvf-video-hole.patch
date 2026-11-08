@@ -1,0 +1,205 @@
+--- a/Source/WebCore/dom/Element.cpp
++++ b/Source/WebCore/dom/Element.cpp
+@@ -2378,6 +2378,14 @@
+     if (oldValue == newValue)
+         return;
+ 
++    // TVF: tvf-hole turns the element's compositing layer into a hole for the
++    // TV's video plane (RenderLayerBacking) - reconfigure it like a video
++    if (name.localName() == "tvf-hole"_s && name.namespaceURI().isNull()) {
++        if (CheckedPtr layerRenderer = dynamicDowncast<RenderLayerModelObject>(renderer()))
++            layerRenderer->contentChanged(ContentChangeType::Video);
++        invalidateStyleAndLayerComposition();
++    }
++
+     switch (name.nodeName()) {
+     case AttributeNames::classAttr:
+         classAttributeChanged(newValue, reason);
+--- a/Source/WebCore/rendering/RenderLayerBacking.cpp
++++ b/Source/WebCore/rendering/RenderLayerBacking.cpp
+@@ -138,12 +138,42 @@
+ #include "ARKitBadgeSystemImage.h"
+ #endif
+ 
++#if USE(COORDINATED_GRAPHICS)
++#include "CoordinatedPlatformLayerBufferHolePunch.h"
++#include "CoordinatedPlatformLayerBufferProxy.h"
++#include <wtf/HashMap.h>
++#include <wtf/NeverDestroyed.h>
++#endif
++
+ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(RenderLayerBacking);
+ 
+ using namespace HTMLNames;
+ 
++#if USE(COORDINATED_GRAPHICS)
++// TVF: an element with the attribute tvf-hole shows a hole for the TV's video
++// plane instead of its content box. The layer's contents are WebKit's hole
++// punch buffer (transparent black, drawn without blending), so everything
++// composited below the element is cut away and everything above it stays -
++// the video hole of a TV browser, without media support in WebKit. The
++// element needs its own compositing layer (e.g. will-change: transform);
++// Element::attributeChanged reconfigures it when the attribute changes.
++static bool tvfHasHole(const RenderLayerModelObject& renderer)
++{
++    static NeverDestroyed<const QualifiedName> name(nullAtom(), AtomString("tvf-hole"_s), nullAtom());
++    RefPtr element = renderer.element();
++    return element && element->hasAttributeWithoutSynchronization(name.get());
++}
++
++// hole buffer proxy per backing (keyed by address, removed with the backing)
++static HashMap<uintptr_t, Ref<CoordinatedPlatformLayerBufferProxy>>& tvfHoles()
++{
++    static NeverDestroyed<HashMap<uintptr_t, Ref<CoordinatedPlatformLayerBufferProxy>>> holes;
++    return holes;
++}
++#endif
++
+ CanvasCompositingStrategy canvasCompositingStrategy(const RenderObject& renderer)
+ {
+     ASSERT(renderer.isRenderHTMLCanvas());
+@@ -363,6 +393,10 @@
+ 
+ RenderLayerBacking::~RenderLayerBacking()
+ {
++#if USE(COORDINATED_GRAPHICS)
++    // the graphics layer keeps its own reference until it goes away
++    tvfHoles().remove(reinterpret_cast<uintptr_t>(this));
++#endif
+     // Note that m_owningLayer->backing() is null here.
+     clearAncestorClippingStack();
+     updateDescendantClippingLayer(false);
+@@ -1327,6 +1361,20 @@
+         }
+     };
+ 
++#if USE(COORDINATED_GRAPHICS)
++    if (tvfHasHole(renderer())) {
++        auto& proxy = tvfHoles().ensure(reinterpret_cast<uintptr_t>(this), [] {
++            Ref proxy = CoordinatedPlatformLayerBufferProxy::create();
++            // waits in the proxy until the layer takes it (next flush)
++            proxy->setDisplayBuffer(CoordinatedPlatformLayerBufferHolePunch::create(IntSize()));
++            return proxy;
++        }).iterator->value;
++        m_graphicsLayer->setContentsToPlatformLayer(proxy.ptr(), GraphicsLayer::ContentsLayerPurpose::Media);
++        updateContentsRects();
++    } else if (tvfHoles().remove(reinterpret_cast<uintptr_t>(this)))
++        m_graphicsLayer->setContentsToPlatformLayer(nullptr, GraphicsLayer::ContentsLayerPurpose::None);
++#endif
++
+     if (RenderLayerCompositor::isCompositedPlugin(renderer()))
+         attachPluginLayer(downcast<RenderEmbeddedObject>(renderer()));
+ 
+@@ -2104,6 +2152,12 @@
+             m_graphicsLayer->setContentsClippingRect(contentsClippingRect);
+         }
+     }
++#if USE(COORDINATED_GRAPHICS)
++    // TVF: a hole in a non-replaced box - clip to the contents rect itself
++    // (the default empty clipping rect would hide it completely)
++    else if (tvfHasHole(renderer()))
++        m_graphicsLayer->setContentsClippingRect(FloatRoundedRect(m_graphicsLayer->contentsRect()));
++#endif
+ }
+ 
+ void RenderLayerBacking::resetContentsRect()
+@@ -3511,6 +3565,12 @@
+     if (m_owningLayer.isRenderViewLayer())
+         return false;
+ 
++#if USE(COORDINATED_GRAPHICS)
++    // TVF: the hole is the contents layer - no solid colour contents in its place
++    if (tvfHasHole(renderer()))
++        return false;
++#endif
++
+     // Scroll containers intentionally use the bitmap path for their background
+     // in updateDrawsContent(), so they are not simple containers.
+     if (m_scrollContainerLayer)
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferHolePunch.h
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferHolePunch.h
+@@ -25,7 +25,7 @@
+ 
+ #pragma once
+ 
+-#if USE(COORDINATED_GRAPHICS) && ENABLE(VIDEO)
++#if USE(COORDINATED_GRAPHICS)
+ #include "CoordinatedPlatformLayerBuffer.h"
+ 
+ #if USE(GSTREAMER)
+@@ -63,4 +63,4 @@
+ 
+ SPECIALIZE_TYPE_TRAITS_COORDINATED_PLATFORM_LAYER_BUFFER_TYPE(CoordinatedPlatformLayerBufferHolePunch, Type::HolePunch)
+ 
+-#endif // USE(COORDINATED_GRAPHICS) && ENABLE(VIDEO)
++#endif // USE(COORDINATED_GRAPHICS)
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferHolePunch.cpp
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferHolePunch.cpp
+@@ -26,7 +26,7 @@
+ #include "config.h"
+ #include "CoordinatedPlatformLayerBufferHolePunch.h"
+ 
+-#if USE(COORDINATED_GRAPHICS) && ENABLE(VIDEO)
++#if USE(COORDINATED_GRAPHICS)
+ #include "IntRect.h"
+ #include "TextureMapper.h"
+ 
+@@ -82,4 +82,4 @@
+ 
+ } // namespace WebCore
+ 
+-#endif // USE(COORDINATED_GRAPHICS) && ENABLE(VIDEO)
++#endif // USE(COORDINATED_GRAPHICS)
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
+@@ -120,13 +120,10 @@
+ 
+ static bool shouldReleaseBuffer(CoordinatedPlatformLayerBuffer* buffer)
+ {
+-#if ENABLE(VIDEO)
+     // Do not release hole punch buffers early. See https://bugs.webkit.org/show_bug.cgi?id=267322.
++    // TVF: also without ENABLE(VIDEO) (tvf-hole, RenderLayerBacking)
+     if (is<CoordinatedPlatformLayerBufferHolePunch>(buffer))
+         return false;
+-#else
+-    UNUSED_PARAM(buffer);
+-#endif
+ 
+     return true;
+ }
+--- a/Source/WebCore/platform/graphics/skia/SkiaCompositingLayer.cpp
++++ b/Source/WebCore/platform/graphics/skia/SkiaCompositingLayer.cpp
+@@ -782,10 +782,9 @@
+             if (!m_contentsBuffer && !m_contentsTiling.size.isEmpty())
+                 return true;
+ 
+-#if ENABLE(VIDEO)
++            // TVF: holes also without ENABLE(VIDEO) (tvf-hole, RenderLayerBacking)
+             if (is<CoordinatedPlatformLayerBufferHolePunch>(m_contentsBuffer))
+                 return true;
+-#endif
+ 
+             // FIXME: clip is not correctly applied with batched painting.
+             if (!m_contentsClippingRect.rect().contains(m_contentsRect))
+@@ -807,9 +806,9 @@
+         auto imageRect = m_contentsRect;
+ 
+         if (m_contentsBuffer) {
+-#if ENABLE(VIDEO)
++            // TVF: holes also without ENABLE(VIDEO) (tvf-hole, RenderLayerBacking)
+             if (is<CoordinatedPlatformLayerBufferHolePunch>(*m_contentsBuffer)) {
+-#if USE(GSTREAMER)
++#if ENABLE(VIDEO) && USE(GSTREAMER)
+                 TransformationMatrix matrix = canvas.getLocalToDevice();
+                 downcast<CoordinatedPlatformLayerBufferHolePunch>(*m_contentsBuffer).setHolePunchVideoRectangle(enclosingIntRect(matrix.mapRect(m_contentsRect)));
+ #endif
+@@ -817,7 +816,6 @@
+                 paint.setBlendMode(SkBlendMode::kClear);
+                 drawRectRestricted(canvas, context.damageRegionOrNull(), SkRect(m_contentsRect), paint);
+             } else
+-#endif // ENABLE(VIDEO)
+                 image = m_contentsBuffer->skiaImage();
+ 
+             auto flags = m_contentsBuffer->flags();

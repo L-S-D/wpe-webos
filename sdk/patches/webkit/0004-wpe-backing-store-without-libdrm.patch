@@ -1,0 +1,12 @@
+--- a/Source/WebKit/UIProcess/wpe/AcceleratedBackingStore.cpp
++++ b/Source/WebKit/UIProcess/wpe/AcceleratedBackingStore.cpp
+@@ -41,6 +41,9 @@
+ #include <drm/drm_fourcc.h>
+ #elif USE(LIBDRM)
+ #include <drm_fourcc.h>
++#elif OS(LINUX)
++// Built without libdrm: the format codes used below come from the kernel header
++#include <drm/drm_fourcc.h>
+ #endif
+ 
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN

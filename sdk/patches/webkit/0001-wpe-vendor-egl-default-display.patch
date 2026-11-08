@@ -1,0 +1,130 @@
+--- a/Source/WebCore/platform/graphics/PlatformDisplay.h
++++ b/Source/WebCore/platform/graphics/PlatformDisplay.h
+@@ -82,7 +82,7 @@
+ #if OS(ANDROID)
+         Android,
+ #endif
+-#if PLATFORM(GTK) || OS(ANDROID)
++#if PLATFORM(GTK) || PLATFORM(WPE) || OS(ANDROID)
+         Default,
+ #endif
+     };
+--- a/Source/WebCore/platform/graphics/egl/PlatformDisplayDefault.h
++++ b/Source/WebCore/platform/graphics/egl/PlatformDisplayDefault.h
+@@ -25,7 +25,7 @@
+ 
+ #pragma once
+ 
+-#if PLATFORM(GTK) || OS(ANDROID)
++#if PLATFORM(GTK) || PLATFORM(WPE) || OS(ANDROID)
+ 
+ #include "PlatformDisplay.h"
+ 
+@@ -44,4 +44,4 @@
+ 
+ } // namespace WebCore
+ 
+-#endif // PLATFORM(GTK) || OS(ANDROID)
++#endif // PLATFORM(GTK) || PLATFORM(WPE) || OS(ANDROID)
+--- a/Source/WebCore/platform/graphics/egl/PlatformDisplayDefault.cpp
++++ b/Source/WebCore/platform/graphics/egl/PlatformDisplayDefault.cpp
+@@ -26,15 +26,42 @@
+ #include "config.h"
+ #include "PlatformDisplayDefault.h"
+ 
+-#if PLATFORM(GTK) || OS(ANDROID)
++#if PLATFORM(GTK) || PLATFORM(WPE) || OS(ANDROID)
+ 
+ #include "GLContext.h"
+ #include <epoxy/egl.h>
+ 
++#if PLATFORM(WPE)
++#include <dlfcn.h>
++#endif
++
+ namespace WebCore {
+ 
+ std::unique_ptr<PlatformDisplayDefault> PlatformDisplayDefault::create()
+ {
++#if PLATFORM(WPE)
++    // Vendor EGL without EGL_MESA_platform_surfaceless and without a DRM render
++    // node (webOS: Mali in the app jail). Offscreen rendering only needs a
++    // display and surfaceless contexts; try the default display first, then a
++    // connection to the Wayland compositor as native display (libwayland-client
++    // is opened at run time, WebKit is built without the Wayland platform).
++    if (auto glDisplay = GLDisplay::create(eglGetDisplay(EGL_DEFAULT_DISPLAY)))
++        return std::unique_ptr<PlatformDisplayDefault>(new PlatformDisplayDefault(glDisplay.releaseNonNull()));
++    if (void* wayland = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_GLOBAL)) {
++        using ConnectFunction = void* (*)(const char*);
++        if (auto connect = reinterpret_cast<ConnectFunction>(dlsym(wayland, "wl_display_connect"))) {
++            if (void* waylandDisplay = connect(nullptr)) {
++                if (auto glDisplay = GLDisplay::create(eglGetDisplay(reinterpret_cast<EGLNativeDisplayType>(waylandDisplay)))) {
++                    WTFLogAlways("Using the Wayland display for EGL");
++                    return std::unique_ptr<PlatformDisplayDefault>(new PlatformDisplayDefault(glDisplay.releaseNonNull()));
++                }
++            }
++        }
++    }
++    WTFLogAlways("Could not create default EGL display: %s", GLContext::lastErrorString());
++    return nullptr;
++#endif
++
+     auto glDisplay = GLDisplay::create(eglGetDisplay(EGL_DEFAULT_DISPLAY));
+     if (!glDisplay) {
+         WTFLogAlways("Could not create default EGL display: %s. Aborting...", GLContext::lastErrorString());
+@@ -57,4 +84,4 @@
+ 
+ } // namespace WebCore
+ 
+-#endif // PLATFORM(GTK) || OS(ANDROID)
++#endif // PLATFORM(GTK) || PLATFORM(WPE) || OS(ANDROID)
+--- a/Source/WebKit/WebProcess/glib/WebProcessGLib.cpp
++++ b/Source/WebKit/WebProcess/glib/WebProcessGLib.cpp
+@@ -71,7 +71,7 @@
+ #include <WebCore/PlatformDisplayAndroid.h>
+ #endif
+ 
+-#if PLATFORM(GTK) || OS(ANDROID)
++#if PLATFORM(GTK) || PLATFORM(WPE) || OS(ANDROID)
+ #include <WebCore/PlatformDisplayDefault.h>
+ #endif
+ 
+@@ -179,7 +179,7 @@
+         return;
+     }
+ 
+-#if PLATFORM(GTK) || OS(ANDROID)
++#if PLATFORM(GTK) || PLATFORM(WPE) || OS(ANDROID)
+     if (auto display = PlatformDisplayDefault::create()) {
+         PlatformDisplay::setSharedDisplay(WTF::move(display));
+         return;
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
+@@ -646,6 +646,13 @@
+     case PlatformDisplay::Type::Default:
+         break;
+ #endif // PLATFORM(GTK)
++#if PLATFORM(WPE) && !OS(ANDROID)
++    case PlatformDisplay::Type::Default:
++        // Vendor EGL without dma-buf export (webOS/Mali): render with GL into
++        // a renderbuffer and read it back into a shared memory buffer.
++        m_type = Type::SharedMemory;
++        break;
++#endif
+ 
+     }
+ }
+--- a/Source/WebKit/WebProcess/WebPage/glib/WebPageGLib.cpp
++++ b/Source/WebKit/WebProcess/WebPage/glib/WebPageGLib.cpp
+@@ -310,6 +310,11 @@
+         info.platform = "WPE"_s;
+         break;
+ #endif
++#if PLATFORM(WPE) && !OS(ANDROID)
++    case PlatformDisplay::Type::Default:
++        info.platform = "Default (vendor EGL, shared memory)"_s;
++        break;
++#endif
+     default:
+         break;
+     }

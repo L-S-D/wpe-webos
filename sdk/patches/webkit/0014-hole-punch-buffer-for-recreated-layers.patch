@@ -1,0 +1,85 @@
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferHolePunch.cpp
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferHolePunch.cpp
+@@ -63,6 +63,15 @@
+ 
+ CoordinatedPlatformLayerBufferHolePunch::~CoordinatedPlatformLayerBufferHolePunch() = default;
+ 
++std::unique_ptr<CoordinatedPlatformLayerBufferHolePunch> CoordinatedPlatformLayerBufferHolePunch::clone() const
++{
++#if USE(GSTREAMER)
++    if (m_videoSink && m_quirksManager)
++        return create(size(), m_videoSink.get(), RefPtr { m_quirksManager });
++#endif
++    return create(size());
++}
++
+ #if USE(GSTREAMER)
+ void CoordinatedPlatformLayerBufferHolePunch::setHolePunchVideoRectangle(const IntRect& rect)
+ {
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferHolePunch.h
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferHolePunch.h
+@@ -46,6 +46,10 @@
+ #endif
+     virtual ~CoordinatedPlatformLayerBufferHolePunch();
+ 
++    // TVF: the same hole (size, sink) for another layer, see
++    // CoordinatedPlatformLayerBufferProxy::setTargetLayer
++    std::unique_ptr<CoordinatedPlatformLayerBufferHolePunch> clone() const;
++
+ #if USE(GSTREAMER)
+     void setHolePunchVideoRectangle(const IntRect&);
+ #endif
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferProxy.cpp
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferProxy.cpp
+@@ -29,6 +29,7 @@
+ #if USE(COORDINATED_GRAPHICS)
+ #include "CoordinatedPlatformLayer.h"
+ #include "CoordinatedPlatformLayerBuffer.h"
++#include "CoordinatedPlatformLayerBufferHolePunch.h"
+ #include <wtf/threads/BinarySemaphore.h>
+ 
+ namespace WebCore {
+@@ -57,6 +58,13 @@
+ 
+     m_layer = layer;
+     if (m_layer) {
++        // TVF: a player pushes its hole punch buffer once per video sink, the
++        // layer it went to keeps it. When the element's layer is recreated
++        // (display:none on an ancestor and back, re-parenting), the new layer
++        // would get no contents at all: no hole, and the sink never learns the
++        // video rectangle. It gets a copy of the last one instead.
++        if (!m_pendingBuffer && m_holePunch)
++            m_pendingBuffer = m_holePunch->clone();
+ #if ENABLE(VIDEO) && USE(GSTREAMER)
+         m_compositingRunLoop = m_layer->compositingRunLoop();
+ #endif
+@@ -87,6 +95,10 @@
+     RefPtr<CoordinatedPlatformLayer> layer;
+     {
+         Locker locker { m_lock };
++        if (auto* holePunch = dynamicDowncast<CoordinatedPlatformLayerBufferHolePunch>(buffer.get()))
++            m_holePunch = holePunch->clone();
++        else if (buffer)
++            m_holePunch = nullptr;
+         if (!m_layer) {
+             m_pendingBuffer = WTF::move(buffer);
+             return;
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferProxy.h
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayerBufferProxy.h
+@@ -34,6 +34,7 @@
+ namespace WebCore {
+ class CoordinatedPlatformLayer;
+ class CoordinatedPlatformLayerBuffer;
++class CoordinatedPlatformLayerBufferHolePunch;
+ class IntSize;
+ class TextureMapperLayer;
+ 
+@@ -57,6 +58,8 @@
+     Lock m_lock;
+     RefPtr<CoordinatedPlatformLayer> m_layer WTF_GUARDED_BY_LOCK(m_lock);
+     std::unique_ptr<CoordinatedPlatformLayerBuffer> m_pendingBuffer WTF_GUARDED_BY_LOCK(m_lock);
++    // TVF: the last hole punch buffer, for layers that attach later
++    std::unique_ptr<CoordinatedPlatformLayerBufferHolePunch> m_holePunch WTF_GUARDED_BY_LOCK(m_lock);
+ #if ENABLE(VIDEO) && USE(GSTREAMER)
+     RefPtr<RunLoop> m_compositingRunLoop WTF_GUARDED_BY_LOCK(m_lock);
+ #endif

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>EME</title>
+<script src="dash.all.min.js"></script></head>
+<body style="margin:0;background:#000;color:#ccc;font:16px sans-serif">
+<video id="v" style="position:absolute;left:100px;top:100px;width:640px;height:360px" muted></video>
+<pre id="log" style="position:absolute;left:760px;top:100px;width:480px;white-space:pre-wrap"></pre>
+<script>
+// EME through WebKit's Thunder CDM -> TVF -> the TV's CDMs (MSE with dash.js).
+//   eme.html            Widevine: Shaka's "Angel One" with Shaka's open license proxy
+//   eme.html?pr         PlayReady: Microsoft's test content and test license server
+//   eme.html?mpd=URL&wv=LICENSE | &pr=LICENSE   own content
+// ?seek=N jumps to N s after 8 s of playback; ?robust asks for HW_SECURE_ALL / SL3000.
+var q = new URLSearchParams(location.search);
+var log = function (m) {
+    console.log('[eme] ' + m);
+    var e = document.getElementById('log');
+    e.textContent = (e.textContent + m + '\n').split('\n').slice(-24).join('\n');
+};
+var pr = q.has('pr');
+var mpd = q.get('mpd') || (pr ? 'https://test.playready.microsoft.com/media/profficialsite/tearsofsteel_4k.ism/manifest.mpd'
+                              : 'https://storage.googleapis.com/shaka-demo-assets/angel-one-widevine/dash.mpd');
+var prot = {};
+if (pr) {
+    prot['com.microsoft.playready'] = {serverURL: q.get('pr') || 'https://test.playready.microsoft.com/service/rightsmanager.asmx?cfg=(persist:false,sl:150)'};
+    if (q.has('robust')) prot['com.microsoft.playready'].videoRobustness = '3000';
+} else {
+    prot['com.widevine.alpha'] = {serverURL: q.get('wv') || 'https://cwip-shaka-proxy.appspot.com/no_auth'};
+    if (q.has('robust')) prot['com.widevine.alpha'].videoRobustness = 'HW_SECURE_ALL';
+}
+var v = document.getElementById('v');
+['encrypted', 'waitingforkey', 'loadedmetadata', 'canplay', 'playing', 'pause', 'seeking', 'seeked', 'ended', 'error', 'stalled', 'waiting'].forEach(function (n) {
+    v.addEventListener(n, function (e) {
+        log(n + (n == 'encrypted' ? ' ' + e.initDataType + ' ' + (e.initData ? e.initData.byteLength : 0) + ' B' : '') +
+            (n == 'error' && v.error ? ' ' + v.error.code + ' ' + v.error.message : '') + ' t=' + v.currentTime.toFixed(2));
+    });
+});
+var p = dashjs.MediaPlayer().create();
+p.updateSettings({debug: {logLevel: dashjs.Debug.LOG_LEVEL_WARNING}});
+['keySystemSelected', 'keySessionCreated', 'licenseRequestComplete', 'keyStatusesChanged', 'protectionCreated', 'error', 'qualityChangeRendered'].forEach(function (n) {
+    p.on(n, function (e) {
+        var d = '';
+        if (n == 'keySystemSelected' && e.data) d = e.data.keySystem && e.data.keySystem.systemString;
+        if (n == 'licenseRequestComplete' && e.error) d = 'FEHLER ' + (e.error.message || e.error);
+        if (n == 'keyStatusesChanged' && e.data && e.data.session && e.data.session.getKeyStatuses) {
+            var st = [];
+            e.data.session.getKeyStatuses().forEach(function (s) { st.push(s); });
+            d = st.join(',');
+        }
+        if (n == 'error') d = JSON.stringify(e.error || e).slice(0, 200);
+        if (n == 'qualityChangeRendered') d = e.mediaType + ' ' + e.newQuality;
+        log('dash ' + n + ' ' + (d || ''));
+    });
+});
+log((pr ? 'PlayReady' : 'Widevine') + ' ' + mpd);
+if (navigator.requestMediaKeySystemAccess) log('EME vorhanden');
+else log('KEIN EME');
+p.initialize(v, mpd, true);
+p.setProtectionData(prot);
+var seek = q.get('seek');
+if (seek) setTimeout(function () { log('Sprung auf ' + seek); v.currentTime = +seek; }, 8000);
+setInterval(function () { log('t=' + v.currentTime.toFixed(2) + ' rs=' + v.readyState + (v.paused ? ' pausiert' : '')); }, 5000);
+</script></body></html>

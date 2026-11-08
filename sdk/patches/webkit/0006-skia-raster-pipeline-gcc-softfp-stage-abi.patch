@@ -1,0 +1,18 @@
+--- a/Source/ThirdParty/skia/src/opts/SkRasterPipeline_opts.h
++++ b/Source/ThirdParty/skia/src/opts/SkRasterPipeline_opts.h
+@@ -1754,7 +1754,15 @@
+ #if defined(SK_CPU_ARM32) && defined(SKRP_CPU_NEON)
+     // This lets us pass vectors more efficiently on 32-bit ARM.
+     // We can still only pass 16 floats, so best as 4x {r,g,b,a}.
++    #if defined(__clang__) || defined(__ARM_PCS_VFP)
+     #define ABI __attribute__((pcs("aapcs-vfp")))
++    #else
++    // GCC with -mfloat-abi=softfp (webOS) applies pcs("aapcs-vfp") to the stage definitions but
++    // not to the calls through the Stage function pointer: the callee expects r,g,b,a in q0-q3,
++    // the caller passes them in r2/r3 and on the stack, and every pipeline produces garbage
++    // (pixel conversion in readPixels, CPU painting of images and gradients).
++    #define ABI
++    #endif
+     #define SKRP_NARROW_STAGES 1
+ #elif defined(_MSC_VER)
+     // Even if not vectorized, this lets us pass {r,g,b,a} as registers,

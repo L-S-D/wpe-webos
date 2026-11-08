@@ -1,0 +1,18 @@
+--- a/Source/cmake/GStreamerChecks.cmake
++++ b/Source/cmake/GStreamerChecks.cmake
+@@ -9,7 +9,14 @@
+       else ()
+           set(GSTREAMER_COMPONENTS app pbutils)
+           if (ENABLE_VIDEO)
+-              list(APPEND GSTREAMER_COMPONENTS video mpegts tag gl)
++              # TVF: gl and mpegts only when used (the webOS SDK has neither)
++              list(APPEND GSTREAMER_COMPONENTS video tag)
++              if (USE_GSTREAMER_MPEGTS)
++                  list(APPEND GSTREAMER_COMPONENTS mpegts)
++              endif ()
++              if (USE_GSTREAMER_GL)
++                  list(APPEND GSTREAMER_COMPONENTS gl)
++              endif ()
+           endif ()
+ 
+           if (ENABLE_WEB_AUDIO)

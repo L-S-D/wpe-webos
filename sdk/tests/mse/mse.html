@@ -1,0 +1,60 @@
+<!doctype html><html><head><meta charset="utf-8"><title>mse</title>
+<script src="dash.all.min.js"></script></head>
+<body style="margin:0;background:#203040">
+<div style="position:absolute;left:60px;top:60px;width:720px;height:440px;background:#008000"></div>
+<div id="c"><video id="v" style="position:absolute;left:100px;top:100px;width:640px;height:360px" muted></video></div>
+<script>
+function log(m) { console.log('[mse] ' + m); }
+var v = document.getElementById('v');
+function ts(t) { try { return MediaSource.isTypeSupported(t); } catch (e) { return 'X ' + e; } }
+log('MediaSource ' + typeof MediaSource + ' | avc1.64001f ' + ts('video/mp4; codecs="avc1.64001f"') +
+    ' | mp4a.40.2 ' + ts('audio/mp4; codecs="mp4a.40.2"') + ' | hev1 ' + ts('video/mp4; codecs="hev1.1.6.L93.B0"') +
+    ' | ec-3 ' + ts('audio/mp4; codecs="ec-3"') + ' | ac-3 ' + ts('audio/mp4; codecs="ac-3"') +
+    ' | webm vp9 ' + ts('video/webm; codecs="vp9"'));
+log('canPlayType mp4 ' + v.canPlayType('video/mp4; codecs="avc1.64001f, mp4a.40.2"') + ' | EME ' + typeof navigator.requestMediaKeySystemAccess);
+['loadstart', 'loadedmetadata', 'loadeddata', 'canplay', 'playing', 'pause', 'waiting', 'seeking', 'seeked', 'ended', 'error', 'stalled'].forEach(function (n) {
+  v.addEventListener(n, function () { log('event ' + n + ' t=' + v.currentTime.toFixed(2) + (n === 'error' && v.error ? ' code ' + v.error.code + ' ' + v.error.message : '')); });
+});
+if (navigator.requestMediaKeySystemAccess)
+  navigator.requestMediaKeySystemAccess('org.w3.clearkey', [{ initDataTypes: ['cenc'], videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.64001f"' }] }])
+    .then(function (a) { log('EME clearkey ok ' + a.keySystem); return a.createMediaKeys(); })
+    .then(function (k) { log('EME MediaKeys ' + (k ? 'ok' : '-')); })
+    .catch(function (e) { log('EME clearkey FEHLER ' + e); });
+var volDone = false;
+v.addEventListener('playing', function () { if (volDone) return; volDone = true; v.volume = 0.5; v.muted = false; log('volume 0.5, muted false'); });
+var p = dashjs.MediaPlayer().create();
+p.updateSettings({ debug: { logLevel: dashjs.Debug.LOG_LEVEL_WARNING } });
+p.on('error', function (e) { log('dash error ' + JSON.stringify(e.error || e).slice(0, 300)); });
+p.initialize(v, 'dash/manifest.mpd', true);
+setInterval(function () {
+  var b = v.buffered, r = [];
+  for (var i = 0; i < b.length; i++) r.push(b.start(i).toFixed(1) + '-' + b.end(i).toFixed(1));
+  log('t=' + v.currentTime.toFixed(2) + ' paused=' + v.paused + ' rs=' + v.readyState + ' buf=' + r.join(','));
+}, 3000);
+// ?pause: pause at 5 s for 4 s; ?seekplay: while playing jump from 14 s back to 6 s;
+// default (and always unless ?noseek): seek to 12 s 25 s after the page started
+var q = location.search, paused5 = false, jumped = false;
+v.addEventListener('timeupdate', function () {
+  if (q.indexOf('pause') >= 0 && !paused5 && v.currentTime >= 5) {
+    paused5 = true; v.pause(); log('pause bei ' + v.currentTime.toFixed(2));
+    setTimeout(function () { log('weiter bei ' + v.currentTime.toFixed(2)); v.play(); }, 4000);
+  }
+  if (q.indexOf('seekplay') >= 0 && !jumped && v.currentTime >= 14) {
+    jumped = true; log('Sprung von ' + v.currentTime.toFixed(2) + ' auf 6'); v.currentTime = 6;
+  }
+});
+if (q.indexOf('noseek') < 0) setTimeout(function () { log('seek 12'); v.currentTime = 12; }, 25000);
+// ?hide: like arte, 2 s after playing the video's container goes display:none for 1 s and comes
+// back with the video elsewhere - WebKit recreates the video's layer (patch 0014: the sink must get
+// the new rectangle 200,150,640,360 and the hole must be there)
+var hidden = false;
+v.addEventListener('playing', function () {
+  if (q.indexOf('hide') < 0 || hidden) return;
+  hidden = true;
+  setTimeout(function () {
+    var c = document.getElementById('c');
+    c.style.display = 'none'; log('Behaelter versteckt');
+    setTimeout(function () { v.style.left = '200px'; v.style.top = '150px'; c.style.display = 'block'; log('Behaelter wieder da, Video bei 200,150'); }, 1000);
+  }, 2000);
+});
+</script></body></html>

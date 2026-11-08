@@ -1,0 +1,24 @@
+--- a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
++++ b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
+@@ -48,6 +48,12 @@
+ #if HAVE(LINUX_MEMFD_H)
+ #include <linux/memfd.h>
+ #include <sys/syscall.h>
++#elif OS(LINUX) && defined(__NR_memfd_create) && defined(MFD_CLOEXEC)
++// Old kernel headers without linux/memfd.h (webOS SDK: Linux 3.10) while the
++// kernels that run it have memfd_create; number and flag come from a compat
++// header. Without this, shared memory would need a writable /dev/shm.
++#include <sys/syscall.h>
++#define WEBKIT_MEMFD_SYSCALL 1
+ #endif
+ 
+ namespace WebCore {
+@@ -80,7 +86,7 @@
+ {
+     int fileDescriptor = -1;
+ 
+-#if HAVE(LINUX_MEMFD_H)
++#if HAVE(LINUX_MEMFD_H) || defined(WEBKIT_MEMFD_SYSCALL)
+     static bool isMemFdAvailable = true;
+     if (isMemFdAvailable) {
+         do {
